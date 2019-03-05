@@ -1,30 +1,122 @@
 use std::collections::HashMap;
 
 macro_rules! state_machine {
-    ( states { $($name:ident $sig:pat),* $(,)? } ) => {
-        "states".to_string()
+    ( @handler $from:ident => $to:ident : $event:ident ; ) => {
+        if event_name == stringify!($event) {
+            Self::$event(from, to);
+            return true;
+        }
     };
 
-    ( event $name:ident (
+    ( @handler $from:ident => $to:ident : $event:ident ; $($tail:tt)+ ) => {
+        state_machine!{@handler $from => $to : $event ;}
+        state_machine!{@handler $($tail)+}
+    };
+
+    ( @destination $from:ident => $to:ident : $event:ident ; ) => {
+        if event_name == stringify!($event) {
+            return Some(State::$to);
+        }
+    };
+
+    ( @destination $from:ident => $to:ident : $event:ident ; $($tail:tt)+ ) => {
+        state_machine!{@destination $from => $to : $event ;}
+        state_machine!{@destination $($tail)+}
+    };
+
+    ( @def states { $($states:tt)+ } ) => {
+        enum State {
+            $($states)*
+        }
+    };
+
+    ( @def event $name:ident (
         $($param:ident : $t:ty),* $(,)?
-    ) $events:block ) => {
-        "event".to_string()
+    ) $handler:block ) => {
+        impl<'a> Machine<'a> {
+            fn $name($($param : $t),*) {
+                $handler
+            }
+        }
     };
 
-    ( transitions { $( $from:ident => $to:ident : $event:ident ; )* } ) => {
-        "transitions".to_string()
+    ( @def transitions { $($transitions:tt)+ } ) => {
+        impl<'a> Machine<'a> {
+            fn get_destination(event_name: &str) -> Option<&State> {
+                state_machine!{@destination $($transitions)+}
+                None
+            }
+
+            fn call_handler(&self, event_name: &str, from: &State, to: &State) -> bool {
+                state_machine!{@handler $($transitions)+}
+                false
+            }
+
+            pub fn trigger_event(&mut self, event_name: &str) -> bool {
+                let from = self.state;
+                let to_option = Self::get_destination(event_name);
+
+                if to_option.is_some() {
+                    let to = to_option.unwrap();
+
+                    return self.call_handler(event_name, from, to);
+                }
+
+                false
+            }
+        }
     };
 
-    ( ; ) => { };
+    // parse a definition of a machine
+    ( @machine $definition:ident $($n:ident $tts:tt)? { $($content:tt)* } ) => {
+        state_machine!{@def $definition $($n $tts)? { $($content)* }}
+    };
 
-    ( ; $($tail:tt)+ ) => { state_machine!($($tail)+) };
+    // if tail is not empty, issue parsing of the first definition and the tail
+    ( @machine $definition:ident $($n:ident $tts:tt)? { $($content:tt)* } $($tail:tt)+ ) => {
+        state_machine!{@machine $definition $($n $tts)? { $($content)* }}
+        state_machine!{@machine $($tail)+}
+    };
 
-    ( $i:ident $($n:ident $tts:tt)? { $($bodies:tt)* } $($tail:tt)+ ) => {{
-        let mut s = state_machine!($i $($n $tts)? { $($bodies)* });
-        s.push_str(&"\n".to_string());
-        s.push_str(&state_machine!($($tail)+));
-        s
-    }};
+    // parse one machine
+    ( machine $name:ident { $($machine:tt)+ } ) => {
+        mod $name {
+            pub struct Machine<'a> {
+                state: &'a State,
+            }
+            state_machine!{@machine $($machine)+}
+        }
+    };
+}
+
+state_machine! {
+    machine BottleFiller {
+        event run(name: String) {
+            //println!("Run application");
+        }
+
+        event pause(name: String, duration: i32) {
+            //println!("Pause application");
+        }
+
+        states {
+            Stopped(),
+            Running(String),
+            Paused(),
+        }
+
+        event stop() {
+            //println!("Stop application");
+        }
+
+        transitions {
+            Stopped => Running : run;
+            Paused  => Running : run;
+            Running => Paused  : pause;
+            Running => Stopped : stop;
+            Paused  => Stopped : stop;
+        }
+    }
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -37,36 +129,6 @@ enum BottleFillerState {
 impl State for BottleFillerState {}
 
 fn main() {
-    let sm = state_machine! {
-        event run(name: String) {
-            println!("Run application");
-        };
-
-        event pause(name: String, duration: i32) {
-            println!("Pause application");
-        };
-
-        states {
-            Stopped(),
-            Running(String),
-            Paused(),
-        };
-
-        event stop() {
-            println!("Stop application");
-        }
-
-        transitions {
-            Stopped => Running : run;
-            Paused  => Running : run;
-            Running => Paused  : pause;
-            Running => Stopped : stop;
-            Paused  => Stopped : stop;
-        }
-    };
-
-    println!("{}", sm);
-
     let mut transitions = HashMap::new();
     transitions.insert(
         "start filling",

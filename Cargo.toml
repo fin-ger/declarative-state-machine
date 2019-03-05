@@ -5,3 +5,4 @@ authors = ["Fin Christensen <christensen.fin@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+phf = { version = "0.7", features = ["macros"] }
