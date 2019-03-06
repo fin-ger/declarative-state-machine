@@ -6,3 +6,13 @@ edition = "2018"
 
 [dependencies]
 phf = { version = "0.7", features = ["macros"] }
+quote = "0.6"
+syn = "0.15"
+proc-macro2 = "0.4"
+
+[lib]
+proc-macro = true
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
