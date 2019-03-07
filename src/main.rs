@@ -1,12 +1,14 @@
+#![feature(proc_macro_hygiene)]
+
 #[macro_use] extern crate state_machine;
 
 state_machine! {
-    machine BottleFiller {
-        event run(old: &State, new: &State) {
-            //println!("Run application");
+    machine bottle_filler {
+        event run(old: &mut State, new: &mut State) {
+            println!("Run application");
         }
 
-        event pause(old: &State, new: &State) {
+        event pause(old: &mut State, new: &mut State) {
             //println!("Pause application");
         }
 
@@ -16,7 +18,7 @@ state_machine! {
             Paused(),
         }
 
-        event stop(old: &State, new: &State) {
+        event stop(old: &mut State, new: &mut State) {
             //println!("Stop application");
         }
 
@@ -31,5 +33,5 @@ state_machine! {
 }
 
 fn main() {
-    //let state_machine = BottleFiller::Machine::new();
+    let state_machine = bottle_filler::Machine::new();
 }
