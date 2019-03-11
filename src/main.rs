@@ -11,9 +11,9 @@ state_machine! {
         }
 
         states {
-            Stopped(),
+            Stopped,
+            Paused{ reason: String },
             Running(String),
-            Paused(),
         }
 
         event stop(_old: &mut State, _new: &mut State) {

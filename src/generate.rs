@@ -132,6 +132,7 @@ pub fn generate(machine: Machine) -> TokenStream {
                 #state_definitions
             }
 
+            #[allow(dead_code)]
             enum StateIdentifier {
                 #(#state_idents,)*
             }
