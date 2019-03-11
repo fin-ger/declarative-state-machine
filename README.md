@@ -70,5 +70,6 @@ The initial state of the state machine during construction is the first state in
 - [ ] Write tests
 - [ ] Add travis CI configuration
 - [ ] Cleanup syntax parsing code by using the `syn` crate
+- [ ] Support superstates (nested state machines)
 
 > Want to help? Choose one of the above TODOs and create a pull request with your solution ;-)
