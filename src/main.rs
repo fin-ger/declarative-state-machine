@@ -1,4 +1,6 @@
-#[macro_use] extern crate declarative_state_machine;
+extern crate declarative_state_machine;
+
+use declarative_state_machine::state_machine;
 
 state_machine! {
     machine bottle_filler {
