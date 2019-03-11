@@ -5,7 +5,7 @@
 Ever wanted to write state machines in a declarative way with rusts mighty type safety? Well, here it is!
 
 ```rust
-#[macro_use] extern crate state_machine;
+#[macro_use] extern crate declarative_state_machine;
 
 state_machine! {
     machine game_lifecycle {
