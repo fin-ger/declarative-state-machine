@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 quote = "0.6"
-syn = "0.15"
+syn = { version = "0.15", features = ["full", "extra-traits"] }
 proc-macro2 = "0.4"
 quick-error = "1"
 

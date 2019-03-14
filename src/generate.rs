@@ -1,24 +1,29 @@
-use crate::syntax::Machine;
-use proc_macro2::{Ident, TokenStream};
+use crate::machine::Machine;
+use proc_macro2::{TokenStream, Span};
+use syn::{Ident, punctuated::Punctuated, token::Comma, Block, FnArg, Variant};
 use quote::quote;
 
+#[derive(Debug)]
 struct Prepared {
     name: Ident,
 
     state_idents: Vec<Ident>,
     state_defaults: Vec<TokenStream>,
     state_initial: Ident,
-    state_definitions: TokenStream,
+    state_definitions: Punctuated<Variant, Comma>,
     state_names: Vec<Ident>,
 
     handler_names: Vec<Ident>,
-    handler_old_param_names: Vec<Ident>,
-    handler_new_param_names: Vec<Ident>,
-    handler_bodies: Vec<TokenStream>,
+    handler_params: Vec<Punctuated<FnArg, Comma>>,
+    handler_bodies: Vec<Block>,
 
     event_names: Vec<Ident>,
-    event_handlers: Vec<Ident>,
-    event_transitions: Vec<TokenStream>,
+    event_params: Vec<Punctuated<FnArg, Comma>>,
+    event_body: Vec<TokenStream>,
+}
+
+fn as_name(ident: &Ident) -> Ident {
+    Ident::new(ident.to_string().to_lowercase().as_str(), ident.span())
 }
 
 fn prepare<'a>(machine: Machine) -> Prepared {
@@ -36,56 +41,143 @@ fn prepare<'a>(machine: Machine) -> Prepared {
         .map(|name| Ident::new(name.to_string().to_lowercase().as_str(), name.span()))
         .collect::<Vec<_>>();
 
-    let handler_names = machine.events.iter()
-        .map(|event| Ident::new(&format!("handle_{}", event.name.to_string()), event.name.span()))
+    let handler_names = machine.handlers.iter()
+        .map(|handler| Ident::new(&format!("handle_{}", handler.name.to_string()), handler.name.span()))
         .collect::<Vec<_>>();
-    let handler_old_param_names = machine.events.iter()
-        .map(|event| event.old_param_name.clone())
+    let handler_params = machine.handlers.iter()
+        .map(|handler| handler.params.clone())
         .collect::<Vec<_>>();
-    let handler_new_param_names = machine.events.iter()
-        .map(|event| event.new_param_name.clone())
-        .collect::<Vec<_>>();
-    let handler_bodies = machine.events.iter()
-        .map(|event| event.body.clone())
+    let handler_bodies = machine.handlers.iter()
+        .map(|handler| handler.body.clone())
         .collect::<Vec<_>>();
 
     let event_names = machine.events.iter()
         .map(|event| event.name.clone())
         .collect::<Vec<_>>();
-    let event_handlers = handler_names.clone();
-    let event_transitions = event_names.iter()
-        .map(|name| {
-            let mut from_identifiers = Vec::new();
-            let mut from_names = Vec::new();
-            let mut to_identifiers = Vec::new();
-            let mut to_names = Vec::new();
+    let event_params = machine.events.iter()
+        .map(|event| event.params.clone())
+        .collect::<Vec<_>>();
+    let event_body = machine.events.iter()
+        .map(|event| {
+            let mut from_bodies = Vec::new();
+            if let Some(event_transitions) = machine.transitions.get(&event.name) {
+                from_bodies = event_transitions
+                    .iter()
+                    .map(|(from_ident, from_transitions)| {
+                        let from_identifiers = from_transitions.iter()
+                            .map(|_| from_ident.clone())
+                            .collect::<Vec<_>>();
+                        let from_names = from_identifiers.iter()
+                            .map(as_name)
+                            .collect::<Vec<_>>();
+                        let to_identifiers = from_transitions.iter()
+                            .map(|transition| transition.to_ident.clone())
+                            .collect::<Vec<_>>();
+                        let from_patterns = from_transitions.iter()
+                            .map(|transition| transition.from_pat.clone())
+                            .collect::<Vec<_>>();
+                        let handlers = from_transitions.iter()
+                            .map(|transition| {
+                                let event_params = event.params.iter()
+                                    .map(|param| {
+                                        if let FnArg::Captured(arg) = param {
+                                            return arg.pat.clone();
+                                        }
 
-            if let Some(trns) = machine.transitions.get(name) {
-                from_identifiers = trns.iter()
-                    .map(|transition| transition.from.clone())
-                    .collect::<Vec<_>>();
-                from_names = from_identifiers.iter()
-                    .map(|from| Ident::new(from.to_string().to_lowercase().as_str(), from.span()))
-                    .collect::<Vec<_>>();
-                to_identifiers = trns.iter()
-                    .map(|transition| transition.to.clone())
-                    .collect::<Vec<_>>();
-                to_names = to_identifiers.iter()
-                    .map(|to| Ident::new(to.to_string().to_lowercase().as_str(), to.span()))
+                                        return syn::Pat::Ident(syn::PatIdent {
+                                            by_ref: None,
+                                            mutability: None,
+                                            ident: Ident::new("__invalid__", Span::call_site()),
+                                            subpat: None,
+                                        });
+                                    })
+                                    .collect::<Vec<_>>();
+                                if let Some(handler) = &transition.handler {
+                                    let handler_name = Ident::new(
+                                        format!("handle_{}", handler).as_str(),
+                                        handler.span()
+                                    );
+                                    let from_name = as_name(from_ident);
+                                    let to_name = as_name(&transition.to_ident);
+                                    let from;
+                                    if *from_ident == transition.to_ident {
+                                        from = quote! { None };
+                                    } else {
+                                        from = quote! { Some(&mut self.#from_name)}
+                                    }
+
+                                    return quote! {
+                                        Self::#handler_name(
+                                            #from,
+                                            &mut self.#to_name,
+                                            #(#event_params,)*
+                                        );
+                                    };
+                                } else {
+                                    return TokenStream::new();
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let predicates = from_transitions.iter()
+                            .map(|transition| {
+                                if let Some(predicate) = &transition.predicate {
+                                    return quote! {
+                                        if (|| -> bool #predicate)()
+                                    }
+                                } else {
+                                    return TokenStream::new();
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let param_initializers = from_transitions.iter()
+                            .map(|transition| {
+                                let params = transition.event_params.iter().collect::<Vec<_>>();
+                                let event_params = event.params.iter()
+                                    .map(|param| {
+                                        if let FnArg::Captured(arg) = param {
+                                            return arg.pat.clone();
+                                        }
+
+                                        return syn::Pat::Ident(syn::PatIdent {
+                                            by_ref: None,
+                                            mutability: None,
+                                            ident: Ident::new("__invalid__", Span::call_site()),
+                                            subpat: None,
+                                        });
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                quote! {
+                                    #(let #params = #event_params;)*
+                                }
+                            })
+                            .collect::<Vec<_>>();
+
+                        quote! {
+                            StateIdentifier::#from_ident => {
+                                #({
+                                    #param_initializers
+                                    if let State::#from_identifiers #from_patterns = self.#from_names {
+                                        #predicates {
+                                            self.current_state = StateIdentifier::#to_identifiers;
+                                            #handlers
+                                            return true;
+                                        }
+                                    }
+                                })*
+                            }
+                        }
+                    })
                     .collect::<Vec<_>>();
             }
 
             return quote! {
-                let (from, to, ident) = match self.current_state {
-                    #(
-                        StateIdentifier::#from_identifiers => (
-                            &mut self.#from_names,
-                            &mut self.#to_names,
-                            StateIdentifier::#to_identifiers,
-                        ),
-                    )*
-                    _ => return false,
+                match self.current_state {
+                    #(#from_bodies,)*
+                    _ => {},
                 };
+
+                false
             };
         })
         .collect::<Vec<_>>();
@@ -98,12 +190,11 @@ fn prepare<'a>(machine: Machine) -> Prepared {
         state_definitions,
         state_names,
         handler_names,
-        handler_old_param_names,
-        handler_new_param_names,
+        handler_params,
         handler_bodies,
         event_names,
-        event_handlers,
-        event_transitions,
+        event_params,
+        event_body,
     }
 }
 
@@ -116,18 +207,17 @@ pub fn generate(machine: Machine) -> TokenStream {
         state_definitions,
         state_names,
         handler_names,
-        handler_old_param_names,
-        handler_new_param_names,
+        handler_params,
         handler_bodies,
         event_names,
-        event_handlers,
-        event_transitions,
+        event_params,
+        event_body,
     } = prepare(machine);
     let state_names2 = state_names.clone();
 
     quote! {
         mod #name {
-            #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+            #[derive(Debug, Clone)]
             pub enum State {
                 #state_definitions
             }
@@ -146,28 +236,16 @@ pub fn generate(machine: Machine) -> TokenStream {
                 pub fn new() -> Self {
                     Self {
                         current_state: StateIdentifier::#state_initial,
-                        #(#state_names2: #state_defaults,)*
+                        #(#state_names2: State::#state_defaults,)*
                     }
                 }
 
-                #(
-                    fn #handler_names(
-                        #handler_old_param_names: &mut State,
-                        #handler_new_param_names: &mut State,
-                    ) {
-                        #handler_bodies
-                    }
-                )*
+                #(fn #handler_names(#handler_params) #handler_bodies)*
 
                 #(
                     #[allow(unreachable_code)]
-                    pub fn #event_names(&mut self) -> bool {
-                        #event_transitions
-
-                        Self::#event_handlers(from, to);
-                        self.current_state = ident;
-
-                        true
+                    pub fn #event_names(&mut self, #event_params) -> bool {
+                        #event_body
                     }
                 )*
             }

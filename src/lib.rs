@@ -4,7 +4,9 @@
 extern crate proc_macro;
 
 mod error;
+mod machine;
 mod events;
+mod handlers;
 mod states;
 mod transitions;
 mod syntax;

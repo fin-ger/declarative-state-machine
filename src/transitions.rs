@@ -1,138 +1,219 @@
 use crate::error::{StateMachineError, StateMachineResult};
 
 use std::collections::HashMap;
-use proc_macro2::{TokenTree, Span, Ident, Delimiter, Spacing};
+use proc_macro2::{TokenStream, Span, Group, Delimiter};
+use syn::{punctuated::Punctuated, token::Comma, token::Dot2, FieldPat, PatTuple, Ident, Member, Pat, PatIdent, Block};
+use quote::{ToTokens, quote, TokenStreamExt};
+
+pub type EventIdent = syn::Ident;
+pub type TransitionIdent = syn::Ident;
+
+#[derive(Debug, Clone)]
+pub enum StatePat {
+    Struct {
+        fields: Punctuated<FieldPat, Comma>,
+        dot2_token: Option<Dot2>,
+    },
+    Tuple {
+        pat: PatTuple,
+    },
+    Unit,
+}
+
+impl ToTokens for StatePat {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            StatePat::Struct { fields, dot2_token } => {
+                let mut s = TokenStream::new();
+                fields.to_tokens(&mut s);
+                if let Some(t) = dot2_token {
+                    t.to_tokens(&mut s);
+                }
+                tokens.append(Group::new(Delimiter::Brace, s));
+            },
+
+            StatePat::Tuple { pat } => {
+                pat.to_tokens(tokens);
+            },
+
+            StatePat::Unit => {},
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Transition {
-    pub from: Ident,
-    pub to: Ident,
+    pub from_pat: StatePat,
+    pub to_ident: Ident,
+    pub event_params: Punctuated<Ident, Comma>,
+    pub predicate: Option<Block>,
+    pub handler: Option<Ident>,
 }
 
-fn parse_transition(
-    iter: &mut Iterator<Item = TokenTree>,
-    mut span: Span,
-) -> StateMachineResult<(Ident, Transition)> {
-    iter.next()
-        .ok_or(StateMachineError::NoFurtherTokens)
-        .and_then(|next| {
-            span = next.span();
-            if let TokenTree::Ident(ident) = next {
-                return Ok(ident);
+pub fn get_transitions() -> HashMap<EventIdent, HashMap<TransitionIdent, Vec<Transition>>> {
+    let mut events = HashMap::new();
+
+    {
+        let mut froms = HashMap::new();
+
+        {
+            let mut transitions = Vec::new();
+
+            {
+                let mut pat_fields = Punctuated::new();
+                pat_fields.push(FieldPat {
+                    attrs: Vec::new(),
+                    member: Member::Named(Ident::new("remaining", Span::call_site())),
+                    colon_token: None,
+                    pat: Box::new(Pat::Ident(PatIdent {
+                        by_ref: None,
+                        mutability: None,
+                        ident: Ident::new("remaining", Span::call_site()),
+                        subpat: None,
+                    })),
+                });
+
+                let mut event_params = Punctuated::new();
+                event_params.push(Ident::new("volume", Span::call_site()));
+
+                let predicate = syn::parse((quote! {{
+                    volume <= remaining
+                }}).into()).unwrap();
+
+                transitions.push(Transition {
+                    from_pat: StatePat::Struct {
+                        fields: pat_fields,
+                        dot2_token: None,
+                    },
+                    to_ident: Ident::new("Filling", Span::call_site()),
+                    event_params,
+                    predicate: Some(predicate),
+                    handler: Some(Ident::new("fill_bottle", Span::call_site())),
+                });
             }
 
-            Err(span.unwrap().error(
-                "expected state identifier for transition source state"
-            ).into())
-        })
-        .and_then(|from| {
-            if let Some(next) = iter.next() {
-                span = next.span();
-                if let TokenTree::Punct(equal_sign) = next {
-                    if let Spacing::Joint = equal_sign.spacing() {
-                        if let Some(other) = iter.next() {
-                            span = other.span();
-                            if let TokenTree::Punct(arrow) = other {
-                                if let Spacing::Alone = arrow.spacing() {
-                                    if equal_sign.as_char() == '=' && arrow.as_char() == '>' {
-                                        return Ok(from);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            {
+                let mut pat_fields = Punctuated::new();
+                pat_fields.push(FieldPat {
+                    attrs: Vec::new(),
+                    member: Member::Named(Ident::new("remaining", Span::call_site())),
+                    colon_token: None,
+                    pat: Box::new(Pat::Ident(PatIdent {
+                        by_ref: None,
+                        mutability: None,
+                        ident: Ident::new("remaining", Span::call_site()),
+                        subpat: None,
+                    })),
+                });
+
+                let mut event_params = Punctuated::new();
+                event_params.push(Ident::new("volume", Span::call_site()));
+
+                let predicate = syn::parse((quote! {{
+                    volume > remaining
+                }}).into()).unwrap();
+
+                transitions.push(Transition {
+                    from_pat: StatePat::Struct {
+                        fields: pat_fields,
+                        dot2_token: None,
+                    },
+                    to_ident: Ident::new("Empty", Span::call_site()),
+                    event_params,
+                    predicate: Some(predicate),
+                    handler: None,
+                });
             }
 
-            Err(span.unwrap().error("expected '=>' event transition operator").into())
-        })
-        .and_then(|from| {
-            if let Some(next) = iter.next() {
-                span = next.span();
-                if let TokenTree::Ident(ident) = next {
-                    return Ok((from, ident));
-                }
-            }
-
-            Err(span.unwrap().error(
-                "expected state identifier for transition destination state",
-            ).into())
-        })
-        .and_then(|tuple| {
-            if let Some(next) = iter.next() {
-                span = next.span();
-                if let TokenTree::Punct(punct) = next {
-                    if let Spacing::Alone = punct.spacing() {
-                        if punct.as_char() == ':' {
-                            return Ok(tuple);
-                        }
-                    }
-                }
-            }
-
-            Err(span.unwrap().error(
-                "expected colon ':' to specify associated event handler"
-            ).into())
-        })
-        .and_then(|(from, to)| {
-            if let Some(next) = iter.next() {
-                span = next.span();
-                if let TokenTree::Ident(ident) = next {
-                    return Ok((ident, Transition {
-                        from: from,
-                        to: to,
-                    }));
-                }
-            }
-
-            Err(span.unwrap().error("expected event handler name").into())
-        })
-        .and_then(|tuple| {
-            if let Some(next) = iter.next() {
-                if let TokenTree::Punct(punct) = next {
-                    if let Spacing::Alone = punct.spacing() {
-                        if punct.as_char() == ';' {
-                            return Ok(tuple);
-                        }
-                    }
-                }
-            }
-
-            Err(span.unwrap().error("expected semicolon ';' at end of transition").into())
-        })
-}
-
-pub fn parse_transitions(
-    iter: &mut Iterator<Item = TokenTree>,
-    mut span: Span,
-) -> StateMachineResult<HashMap<Ident, Vec<Transition>>> {
-    let mut transitions: HashMap<Ident, Vec<Transition>> = HashMap::new();
-
-    if let Some(next) = iter.next() {
-        span = next.span();
-        if let TokenTree::Group(group) = next {
-            if let Delimiter::Brace = group.delimiter() {
-                let mut iter = group.stream().into_iter();
-                loop {
-                    match parse_transition(&mut iter, span) {
-                        Err(StateMachineError::NoFurtherTokens) => {
-                            return Ok(transitions);
-                        },
-                        Err(err) => {
-                            return Err(err);
-                        },
-                        Ok((event, transition)) => {
-                            if let Some(value) = transitions.get_mut(&event) {
-                                value.push(transition);
-                            } else {
-                                transitions.insert(event, vec![transition]);
-                            }
-                        }
-                    }
-                }
-            }
+            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
         }
+
+        events.insert(Ident::new("fill", Span::call_site()), froms);
     }
 
-    Err(span.unwrap().error("expected transitions body 'transitions { ... }'").into())
+    {
+        let mut froms = HashMap::new();
+
+        {
+            let mut transitions = Vec::new();
+            transitions.push(Transition {
+                from_pat: StatePat::Struct {
+                    fields: Punctuated::new(),
+                    dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]),
+                },
+                to_ident: Ident::new("Empty", Span::call_site()),
+                event_params: Punctuated::new(),
+                predicate: None,
+                handler: None,
+            });
+
+            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
+        }
+
+        events.insert(Ident::new("dump", Span::call_site()), froms);
+    }
+
+    {
+        let mut froms = HashMap::new();
+
+        {
+            let mut transitions = Vec::new();
+            transitions.push(Transition {
+                from_pat: StatePat::Struct {
+                    fields: Punctuated::new(),
+                    dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]),
+                },
+                to_ident: Ident::new("Idle", Span::call_site()),
+                event_params: Punctuated::new(),
+                predicate: None,
+                handler: Some(Ident::new("fuel_tank", Span::call_site())),
+            });
+
+            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
+        }
+
+        {
+            let mut transitions = Vec::new();
+            transitions.push(Transition {
+                from_pat: StatePat::Unit,
+                to_ident: Ident::new("Idle", Span::call_site()),
+                event_params: Punctuated::new(),
+                predicate: None,
+                handler: Some(Ident::new("fuel_tank", Span::call_site())),
+            });
+
+            froms.insert(Ident::new("Empty", Span::call_site()), transitions);
+        }
+
+        events.insert(Ident::new("fuel", Span::call_site()), froms);
+    }
+
+    {
+        let mut froms = HashMap::new();
+
+        {
+            let mut transitions = Vec::new();
+            transitions.push(Transition {
+                from_pat: StatePat::Tuple {
+                    pat: PatTuple {
+                        paren_token: syn::token::Paren { span: Span::call_site() },
+                        front: Punctuated::new(),
+                        dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]}),
+                        comma_token: None,
+                        back: Punctuated::new(),
+                    },
+                },
+                to_ident: Ident::new("Idle", Span::call_site()),
+                event_params: Punctuated::new(),
+                predicate: None,
+                handler: Some(Ident::new("bottle_full", Span::call_site())),
+            });
+
+            froms.insert(Ident::new("Filling", Span::call_site()), transitions);
+        }
+
+        events.insert(Ident::new("full", Span::call_site()), froms);
+    }
+
+    events
 }

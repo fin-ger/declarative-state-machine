@@ -1,9 +1,9 @@
 use crate::error::StateMachineResult;
-use crate::syntax::Machine;
+use crate::machine::Machine;
 
 pub fn parse_semantic(machine: Machine) -> StateMachineResult<Machine> {
     // check if transitions only contain known states
-    let state_idents = machine.states.defaults.keys()
+    /*let state_idents = machine.states.defaults.keys()
         .map(|state| state.clone())
         .collect::<Vec<_>>();
     let mut transition_states = machine.transitions.values()
@@ -82,7 +82,7 @@ pub fn parse_semantic(machine: Machine) -> StateMachineResult<Machine> {
                 )
                 .emit();
         }
-    }
+    }*/
 
     // TODO: if $event_handle never used, warn that event never gets triggered
 
