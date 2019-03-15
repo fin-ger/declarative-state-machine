@@ -1,50 +1,67 @@
-use crate::error::{StateMachineResult, StateMachineError};
-
+use crate::machine::keywords;
 use std::collections::HashMap;
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Variant, Ident, punctuated::Punctuated, token::Comma};
+use syn::{Variant, Fields, Ident, punctuated::Punctuated, token::Comma};
+use syn::parse::{Parse, ParseStream, Result};
 
+#[derive(Debug)]
 pub struct States {
     pub initial: Ident,
     pub definition: Punctuated<Variant, Comma>,
     pub defaults: HashMap<Ident, TokenStream>,
 }
 
-impl Default for States {
-    fn default() -> Self {
-        Self {
-            initial: Ident::new("__invalid__", Span::call_site()),
-            definition: Punctuated::new(),
-            defaults: HashMap::new(),
-        }
-    }
-}
+impl Parse for States {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<keywords::states>()?;
+        let content;
+        syn::braced!(content in input);
+        let initial = content.fork().parse()?;
+        let definition = content.parse_terminated(Variant::parse)?;
+        let defaults = definition.clone().into_iter()
+            .map(|variant| {
+                let name = variant.ident;
+                let default = match variant.fields {
+                    Fields::Named(fields) => {
+                        let (idents, types): (Vec<_>, Vec<_>) = fields.named.into_iter()
+                            .map(|field| (
+                                field.ident.unwrap(),
+                                field.ty,
+                            )).unzip();
 
-pub fn get_states() -> States {
-    let mut definition = Punctuated::new();
-    let mut defaults = HashMap::new();
+                        quote! {
+                            State::#name{
+                                #(#idents: <#types as core::default::Default>::default(),)*
+                            }
+                        }
+                    },
+                    Fields::Unnamed(fields) => {
+                        let types = fields.unnamed.into_iter()
+                            .map(|field| field.ty)
+                            .collect::<Vec<_>>();
 
-    definition.push(syn::parse((quote! { Idle { remaining: f32, } }).into()).unwrap());
-    definition.push(syn::parse((quote! { Filling(f32) }).into()).unwrap());
-    definition.push(syn::parse((quote! { Empty }).into()).unwrap());
+                        quote! {
+                            State::#name(
+                                #(<#types as core::default::Default>::default(),)*
+                            )
+                        }
+                    },
+                    Fields::Unit => {
+                        quote! {
+                            State::#name
+                        }
+                    },
+                };
 
-    defaults.insert(
-        Ident::new("Idle", Span::call_site()),
-        quote! { Idle { remaining: <f32 as core::default::Default>::default() } },
-    );
-    defaults.insert(
-        Ident::new("Filling", Span::call_site()),
-        quote! { Filling(<f32 as core::default::Default>::default()) },
-    );
-    defaults.insert(
-        Ident::new("Empty", Span::call_site()),
-        quote! { Empty },
-    );
+                (name, default)
+            })
+            .collect();
 
-    States {
-        initial: Ident::new("Idle", Span::call_site()),
-        definition,
-        defaults,
+        Ok(Self {
+            initial,
+            definition,
+            defaults,
+        })
     }
 }

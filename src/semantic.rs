@@ -1,7 +1,7 @@
-use crate::error::StateMachineResult;
+use syn::parse::Result;
 use crate::machine::Machine;
 
-pub fn parse_semantic(machine: Machine) -> StateMachineResult<Machine> {
+pub fn parse_semantic(machine: Machine) -> Result<Machine> {
     // check if transitions only contain known states
     /*let state_idents = machine.states.defaults.keys()
         .map(|state| state.clone())

@@ -1,7 +1,6 @@
-use crate::error::StateMachineResult;
-use proc_macro2::Span;
-use syn::{punctuated::Punctuated, Ident, FnArg, token::Comma};
-use quote::quote;
+use crate::machine::keywords;
+use syn::{punctuated::Punctuated, Token, Ident, FnArg, token::Comma};
+use syn::parse::{Parse, ParseStream, Result};
 
 #[derive(Debug)]
 pub struct Event {
@@ -9,32 +8,18 @@ pub struct Event {
     pub params: Punctuated<FnArg, Comma>,
 }
 
-//pub fn parse_event(iter: &mut Iterator<Item = TokenTree>, span: Span) -> StateMachineResult<Event> {
-//}
+impl Parse for Event {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<keywords::event>()?;
+        let name = input.parse()?;
+        let content;
+        syn::parenthesized!(content in input);
+        let params = content.parse_terminated(FnArg::parse)?;
+        input.parse::<Token![;]>()?;
 
-pub fn get_events() -> Vec<Event> {
-    let mut events = Vec::new();
-    let mut params = Punctuated::new();
-    params.push_value(syn::parse((quote! { volume: f32 }).into()).unwrap());
-    events.push(Event {
-        name: Ident::new("fill", Span::call_site()),
-        params,
-    });
-
-    events.push(Event {
-        name: Ident::new("full", Span::call_site()),
-        params: Punctuated::new(),
-    });
-
-    events.push(Event {
-        name: Ident::new("fuel", Span::call_site()),
-        params: Punctuated::new(),
-    });
-
-    events.push(Event {
-        name: Ident::new("dump", Span::call_site()),
-        params: Punctuated::new(),
-    });
-
-    events
+        Ok(Self {
+            name,
+            params,
+        })
+    }
 }

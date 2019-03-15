@@ -236,7 +236,7 @@ pub fn generate(machine: Machine) -> TokenStream {
                 pub fn new() -> Self {
                     Self {
                         current_state: StateIdentifier::#state_initial,
-                        #(#state_names2: State::#state_defaults,)*
+                        #(#state_names2: #state_defaults,)*
                     }
                 }
 

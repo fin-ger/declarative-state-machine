@@ -1,42 +1,109 @@
-use crate::error::{StateMachineError, StateMachineResult};
-
 use std::collections::HashMap;
-use proc_macro2::{TokenStream, Span, Group, Delimiter};
-use syn::{punctuated::Punctuated, token::Comma, token::Dot2, FieldPat, PatTuple, Ident, Member, Pat, PatIdent, Block};
-use quote::{ToTokens, quote, TokenStreamExt};
+use proc_macro2::{TokenStream, Group, Delimiter};
+use syn::{punctuated::Punctuated, spanned::Spanned, Pat, PatStruct, PatTupleStruct, Ident, Block, Token};
+use syn::token::{Brace, Paren, Comma};
+use syn::parse::{Parse, ParseStream, Result, Error};
+use quote::{ToTokens, TokenStreamExt};
 
-pub type EventIdent = syn::Ident;
-pub type TransitionIdent = syn::Ident;
+use crate::machine::keywords;
+
+pub type EventIdent = Ident;
+pub type TransitionIdent = Ident;
+pub type Transitions = HashMap<EventIdent, HashMap<TransitionIdent, Vec<Transition>>>;
 
 #[derive(Debug, Clone)]
 pub enum StatePat {
     Struct {
-        fields: Punctuated<FieldPat, Comma>,
-        dot2_token: Option<Dot2>,
+        pat: PatStruct,
     },
     Tuple {
-        pat: PatTuple,
+        pat: PatTupleStruct,
     },
-    Unit,
+    Unit {
+        ident: Ident,
+    },
+}
+
+impl StatePat {
+    pub fn ident(&self) -> Result<Ident> {
+        match self {
+            StatePat::Struct { pat } => {
+                let segments = &pat.path.segments;
+                if segments.len() != 1 {
+                    Err(
+                        Error::new(segments.span(), "expected identifier")
+                    )
+                } else {
+                    Ok(segments.first().unwrap().value().ident.clone())
+                }
+            },
+            StatePat::Tuple { pat } => {
+                let segments = &pat.path.segments;
+                if segments.len() != 1 {
+                    Err(
+                        Error::new(segments.span(), "expected identifier")
+                    )
+                } else {
+                    Ok(segments.first().unwrap().value().ident.clone())
+                }
+            },
+            StatePat::Unit { ident } => {
+                Ok(ident.clone())
+            }
+        }
+    }
 }
 
 impl ToTokens for StatePat {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            StatePat::Struct { fields, dot2_token } => {
+            StatePat::Struct { pat } => {
                 let mut s = TokenStream::new();
-                fields.to_tokens(&mut s);
-                if let Some(t) = dot2_token {
+                pat.fields.to_tokens(&mut s);
+                if let Some(t) = pat.dot2_token {
                     t.to_tokens(&mut s);
                 }
                 tokens.append(Group::new(Delimiter::Brace, s));
             },
 
             StatePat::Tuple { pat } => {
-                pat.to_tokens(tokens);
+                pat.pat.to_tokens(tokens);
             },
 
-            StatePat::Unit => {},
+            StatePat::Unit { .. } => {},
+        }
+    }
+}
+
+impl Parse for StatePat {
+    fn parse(input: ParseStream) -> Result<Self> {
+        if input.peek2(Brace) {
+            let p = input.parse()?;
+            if let Pat::Struct(pat) = p {
+                Ok(StatePat::Struct {
+                    pat,
+                })
+            } else {
+                Err(
+                    Error::new(p.span(), "expected struct pattern '{a, b: y, ..}'")
+                )
+            }
+        } else if input.peek2(Paren) {
+            let p = input.parse()?;
+            if let Pat::TupleStruct(pat) = p {
+                Ok(StatePat::Tuple {
+                    pat,
+                })
+            } else {
+                Err(
+                    Error::new(p.span(), "expected tuple pattern '(a, _, ..)'")
+                )
+            }
+        } else {
+            let ident = input.parse()?;
+            Ok(StatePat::Unit {
+                ident,
+            })
         }
     }
 }
@@ -50,170 +117,56 @@ pub struct Transition {
     pub handler: Option<Ident>,
 }
 
-pub fn get_transitions() -> HashMap<EventIdent, HashMap<TransitionIdent, Vec<Transition>>> {
-    let mut events = HashMap::new();
+pub fn parse_transitions(input: ParseStream) -> Result<Transitions> {
+    input.parse::<keywords::transitions>()?;
+    let content;
+    syn::braced!(content in input);
+    let mut events = Transitions::new();
 
-    {
-        let mut froms = HashMap::new();
+    while !content.is_empty() {
+        let from_pat = content.parse::<StatePat>()?;
+        let from_ident = from_pat.ident()?;
+        content.parse::<Token![=>]>()?;
+        let to_ident = content.parse()?;
+        content.parse::<Token![:]>()?;
+        let event_ident = content.parse()?;
+        let params;
+        syn::parenthesized!(params in content);
+        let event_params = params.parse_terminated(Ident::parse)?;
+        let mut predicate = None;
+        let mut handler = None;
 
-        {
-            let mut transitions = Vec::new();
+        if !content.peek(Token![;]) && !content.peek(Token![->]) {
+            predicate = Some(content.parse()?);
+        }
 
-            {
-                let mut pat_fields = Punctuated::new();
-                pat_fields.push(FieldPat {
-                    attrs: Vec::new(),
-                    member: Member::Named(Ident::new("remaining", Span::call_site())),
-                    colon_token: None,
-                    pat: Box::new(Pat::Ident(PatIdent {
-                        by_ref: None,
-                        mutability: None,
-                        ident: Ident::new("remaining", Span::call_site()),
-                        subpat: None,
-                    })),
-                });
+        if !content.peek(Token![;]) {
+            content.parse::<Token![->]>()?;
+            handler = Some(content.parse()?);
+        }
 
-                let mut event_params = Punctuated::new();
-                event_params.push(Ident::new("volume", Span::call_site()));
+        content.parse::<Token![;]>()?;
 
-                let predicate = syn::parse((quote! {{
-                    volume <= remaining
-                }}).into()).unwrap();
+        if !events.contains_key(&event_ident) {
+            events.insert(event_ident.clone(), HashMap::new());
+        }
 
-                transitions.push(Transition {
-                    from_pat: StatePat::Struct {
-                        fields: pat_fields,
-                        dot2_token: None,
-                    },
-                    to_ident: Ident::new("Filling", Span::call_site()),
-                    event_params,
-                    predicate: Some(predicate),
-                    handler: Some(Ident::new("fill_bottle", Span::call_site())),
-                });
+        if let Some(froms) = events.get_mut(&event_ident) {
+            if !froms.contains_key(&from_ident) {
+                froms.insert(from_ident.clone(), Vec::new());
             }
 
-            {
-                let mut pat_fields = Punctuated::new();
-                pat_fields.push(FieldPat {
-                    attrs: Vec::new(),
-                    member: Member::Named(Ident::new("remaining", Span::call_site())),
-                    colon_token: None,
-                    pat: Box::new(Pat::Ident(PatIdent {
-                        by_ref: None,
-                        mutability: None,
-                        ident: Ident::new("remaining", Span::call_site()),
-                        subpat: None,
-                    })),
-                });
-
-                let mut event_params = Punctuated::new();
-                event_params.push(Ident::new("volume", Span::call_site()));
-
-                let predicate = syn::parse((quote! {{
-                    volume > remaining
-                }}).into()).unwrap();
-
+            if let Some(transitions) = froms.get_mut(&from_ident) {
                 transitions.push(Transition {
-                    from_pat: StatePat::Struct {
-                        fields: pat_fields,
-                        dot2_token: None,
-                    },
-                    to_ident: Ident::new("Empty", Span::call_site()),
+                    from_pat,
+                    to_ident,
                     event_params,
-                    predicate: Some(predicate),
-                    handler: None,
+                    predicate,
+                    handler,
                 });
             }
-
-            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
         }
-
-        events.insert(Ident::new("fill", Span::call_site()), froms);
     }
 
-    {
-        let mut froms = HashMap::new();
-
-        {
-            let mut transitions = Vec::new();
-            transitions.push(Transition {
-                from_pat: StatePat::Struct {
-                    fields: Punctuated::new(),
-                    dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]),
-                },
-                to_ident: Ident::new("Empty", Span::call_site()),
-                event_params: Punctuated::new(),
-                predicate: None,
-                handler: None,
-            });
-
-            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
-        }
-
-        events.insert(Ident::new("dump", Span::call_site()), froms);
-    }
-
-    {
-        let mut froms = HashMap::new();
-
-        {
-            let mut transitions = Vec::new();
-            transitions.push(Transition {
-                from_pat: StatePat::Struct {
-                    fields: Punctuated::new(),
-                    dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]),
-                },
-                to_ident: Ident::new("Idle", Span::call_site()),
-                event_params: Punctuated::new(),
-                predicate: None,
-                handler: Some(Ident::new("fuel_tank", Span::call_site())),
-            });
-
-            froms.insert(Ident::new("Idle", Span::call_site()), transitions);
-        }
-
-        {
-            let mut transitions = Vec::new();
-            transitions.push(Transition {
-                from_pat: StatePat::Unit,
-                to_ident: Ident::new("Idle", Span::call_site()),
-                event_params: Punctuated::new(),
-                predicate: None,
-                handler: Some(Ident::new("fuel_tank", Span::call_site())),
-            });
-
-            froms.insert(Ident::new("Empty", Span::call_site()), transitions);
-        }
-
-        events.insert(Ident::new("fuel", Span::call_site()), froms);
-    }
-
-    {
-        let mut froms = HashMap::new();
-
-        {
-            let mut transitions = Vec::new();
-            transitions.push(Transition {
-                from_pat: StatePat::Tuple {
-                    pat: PatTuple {
-                        paren_token: syn::token::Paren { span: Span::call_site() },
-                        front: Punctuated::new(),
-                        dot2_token: Some(Dot2 { spans: [Span::call_site(), Span::call_site()]}),
-                        comma_token: None,
-                        back: Punctuated::new(),
-                    },
-                },
-                to_ident: Ident::new("Idle", Span::call_site()),
-                event_params: Punctuated::new(),
-                predicate: None,
-                handler: Some(Ident::new("bottle_full", Span::call_site())),
-            });
-
-            froms.insert(Ident::new("Filling", Span::call_site()), transitions);
-        }
-
-        events.insert(Ident::new("full", Span::call_site()), froms);
-    }
-
-    events
+    Ok(events)
 }
